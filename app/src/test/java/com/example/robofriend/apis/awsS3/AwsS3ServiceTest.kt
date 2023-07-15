@@ -2,11 +2,12 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert
 import org.junit.Test
 import java.net.URL
+import com.example.robofriend.BuildConfig
 
 class AwsS3ServiceTest {
 
-    private val identityPoolId = "eu-north-1:086ae218-1d35-47ac-b19c-f2af94bcc47a"
-    private val bucketName = "test-bucket-amir4"
+    private val identityPoolId = BuildConfig.AWS_IDENTITY_POOL_ID
+    private val bucketName = BuildConfig.AWS_BUCKET_NAME
     private val awsS3Service = AwsS3Service(identityPoolId, bucketName)
 
     @Test

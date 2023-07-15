@@ -14,3 +14,4 @@
 .cxx
 local.properties
 /app/build.gradle.kts
+/app/src/main/java/com/example/robofriend/apis/awsS3/s3_config
