@@ -1,0 +1,20 @@
+{
+  "Version": "1.0",
+  "IdentityManager": {
+    "Default": {}
+  },
+  "CredentialsProvider": {
+    "CognitoIdentity": {
+      "Default": {
+        "PoolId": "eu-north-1:15e73c52-c5f8-4c24-b9d9-31cae0d3ee8e",
+        "Region": "eu-north-1"
+      }
+    }
+  },
+  "S3TransferUtility": {
+    "Default": {
+      "Bucket": "robofriend-android",
+      "Region": "us-east-1"
+    }
+  }
+}

@@ -10,6 +10,7 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -21,20 +22,15 @@ private val DarkColorScheme = darkColorScheme(
         tertiary = Pink80
 )
 
-private val LightColorScheme = lightColorScheme(
-        primary = Purple40,
-        secondary = PurpleGrey40,
-        tertiary = Pink40
-
-        /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+private val MyColorScheme = lightColorScheme(
+        primary = Color(0xFFA0C49D),
+        secondary = Color(0xFFC4D7B2),
+        background = Color(0xFFF7FFE5),
+        surface = Color(0xFFF7FFE5),
+        onPrimary = Color.Black,
+        onSecondary = Color.Black,
+        onBackground = Color.Black,
+        onSurface = Color.Black,
 )
 
 @Composable
@@ -51,7 +47,7 @@ fun RoboFriendTheme(
         }
 
         darkTheme -> DarkColorScheme
-        else -> LightColorScheme
+        else -> MyColorScheme
     }
     val view = LocalView.current
     if (!view.isInEditMode) {
@@ -63,7 +59,7 @@ fun RoboFriendTheme(
     }
 
     MaterialTheme(
-            colorScheme = colorScheme,
+            colorScheme = MyColorScheme,
             typography = Typography,
             content = content
     )

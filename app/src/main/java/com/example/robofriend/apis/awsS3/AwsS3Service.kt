@@ -1,79 +1,69 @@
-import software.amazon.awssdk.services.s3.S3Client
-import software.amazon.awssdk.services.s3.model.PutObjectRequest
-import software.amazon.awssdk.services.s3.presigner.S3Presigner
-import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest
-import software.amazon.awssdk.services.cognitoidentity.model.GetIdRequest
-import software.amazon.awssdk.services.cognitoidentity.model.GetCredentialsForIdentityRequest
-import software.amazon.awssdk.services.cognitoidentity.CognitoIdentityClient
-import software.amazon.awssdk.core.sync.RequestBody
-import software.amazon.awssdk.auth.credentials.AwsSessionCredentials
-import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
-import software.amazon.awssdk.regions.Region
-import java.nio.file.Paths
-import java.time.Duration
+import android.content.Context
+import com.amazonaws.auth.CognitoCachingCredentialsProvider
+import com.amazonaws.mobileconnectors.s3.transferutility.TransferListener
+import com.amazonaws.mobileconnectors.s3.transferutility.TransferState
+import com.amazonaws.mobileconnectors.s3.transferutility.TransferUtility
+import com.amazonaws.regions.Regions
+import com.amazonaws.services.s3.AmazonS3Client
+import com.amazonaws.services.s3.S3ClientOptions
+import com.amazonaws.services.s3.model.GeneratePresignedUrlRequest
+import com.example.robofriend.BuildConfig
+import java.io.File
+import java.net.URL
+import java.util.*
 
-class AwsS3Service(private val identityPoolId: String, private val bucketName: String) {
+class AwsS3Service(context: Context) {
+    private val s3Client: AmazonS3Client
+    private val transferUtility: TransferUtility
 
-    private val cognitoIdentity = CognitoIdentityClient.builder()
-        .region(Region.EU_NORTH_1)
-        .build()
-
-    fun uploadFile(key: String, filePath: String): String {
-
-        // Fetch Cognito identity
-        val idRes = cognitoIdentity.getId(
-            GetIdRequest.builder()
-                .identityPoolId(identityPoolId)
-                .build()
+    init {
+        // Initialize the Amazon Cognito credentials provider
+        val credentialsProvider = CognitoCachingCredentialsProvider(
+            context,
+            BuildConfig.AWS_IDENTITY_POOL_ID, // Identity pool ID
+            Regions.EU_NORTH_1 // Region
         )
 
-        // Fetch temporary credentials for that identity
-        val credentialsRes = cognitoIdentity.getCredentialsForIdentity(
-            GetCredentialsForIdentityRequest.builder()
-                .identityId(idRes.identityId())
-                .build()
-        )
+        // Create an S3 client
+        s3Client = AmazonS3Client(credentialsProvider)
 
-        val sessionCredentials = AwsSessionCredentials.create(
-            credentialsRes.credentials().accessKeyId(),
-            credentialsRes.credentials().secretKey(),
-            credentialsRes.credentials().sessionToken()
-        )
-
-        val s3Client = S3Client.builder()
-            .region(Region.EU_NORTH_1)
-            .credentialsProvider(StaticCredentialsProvider.create(sessionCredentials))
+        // Create a transfer utility
+        transferUtility = TransferUtility.builder()
+            .context(context)
+            .s3Client(s3Client)
             .build()
+    }
 
-        // Upload file to S3
-        s3Client.putObject(PutObjectRequest.builder()
-            .bucket(bucketName)
-            .key(key)
-            .build(),
-            RequestBody.fromFile(Paths.get(filePath))
-        )
+    fun uploadFile(bucketName: String, file: File, objectKey: String): URL {
+        val uploadObserver = transferUtility.upload(bucketName, objectKey, file)
 
-        // Create a presigner with the same region and credentials
-        val presigner = S3Presigner.builder()
-            .region(Region.EU_NORTH_1)
-            .credentialsProvider(StaticCredentialsProvider.create(sessionCredentials))
-            .build()
+        uploadObserver.setTransferListener(object : TransferListener {
+            override fun onStateChanged(id: Int, state: TransferState) {
+                if (TransferState.COMPLETED == state) {
+                    // The upload is complete
+                }
+            }
 
-        // Create a presign request
-        val getObjectRequest = GetObjectPresignRequest.builder()
-            .signatureDuration(Duration.ofHours(24))
-            .getObjectRequest(
-                software.amazon.awssdk.services.s3.model.GetObjectRequest.builder()
-                    .bucket(bucketName)
-                    .key(key)
-                    .build()
-            )
-            .build()
+            override fun onProgressChanged(id: Int, bytesCurrent: Long, bytesTotal: Long) {
+                val percentDonef = bytesCurrent.toFloat() / bytesTotal.toFloat() * 100
+                val percentDone = percentDonef.toInt()
+                println("ID:$id bytesCurrent: $bytesCurrent bytesTotal: $bytesTotal $percentDone%")
+            }
 
-        // Generate the presigned URL
-        val presignedGetObjectRequest = presigner.presignGetObject(getObjectRequest)
+            override fun onError(id: Int, ex: Exception) {
+                // Handle errors
+            }
+        })
 
-        // Return the presigned URL
-        return presignedGetObjectRequest.url().toString()
+        val expiration = Date()
+        var msec = expiration.time
+        msec += 1000 * 60 * 60 // Add 1 hour
+        expiration.time = msec
+
+        val generatePresignedUrlRequest = GeneratePresignedUrlRequest(bucketName, objectKey)
+        generatePresignedUrlRequest.method = com.amazonaws.HttpMethod.GET
+        generatePresignedUrlRequest.expiration = expiration
+
+        return s3Client.generatePresignedUrl(generatePresignedUrlRequest)
     }
 }
