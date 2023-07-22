@@ -11,6 +11,7 @@ import com.example.robofriend.BuildConfig
 import java.io.File
 import java.net.URL
 import java.util.*
+import java.util.concurrent.CompletableFuture
 
 class AwsS3Service(context: Context) {
     private val s3Client: AmazonS3Client
@@ -34,13 +35,27 @@ class AwsS3Service(context: Context) {
             .build()
     }
 
-    fun uploadFile(bucketName: String, file: File, objectKey: String): URL {
+    fun uploadFile(bucketName: String, file: File, objectKey: String): CompletableFuture<URL> {
+        val future = CompletableFuture<URL>()
+
         val uploadObserver = transferUtility.upload(bucketName, objectKey, file)
 
         uploadObserver.setTransferListener(object : TransferListener {
             override fun onStateChanged(id: Int, state: TransferState) {
                 if (TransferState.COMPLETED == state) {
-                    // The upload is complete
+                    val expiration = Date()
+                    var msec = expiration.time
+                    msec += 1000 * 60 * 60 // Add 1 hour
+                    expiration.time = msec
+
+                    val generatePresignedUrlRequest = GeneratePresignedUrlRequest(bucketName, objectKey)
+                    generatePresignedUrlRequest.method = com.amazonaws.HttpMethod.GET
+                    generatePresignedUrlRequest.expiration = expiration
+
+                    val url = s3Client.generatePresignedUrl(generatePresignedUrlRequest)
+                    future.complete(url)
+                } else if (state == TransferState.FAILED || state == TransferState.CANCELED) {
+                    future.completeExceptionally(RuntimeException("Upload failed with state: $state"))
                 }
             }
 
@@ -51,19 +66,10 @@ class AwsS3Service(context: Context) {
             }
 
             override fun onError(id: Int, ex: Exception) {
-                // Handle errors
+                future.completeExceptionally(ex)
             }
         })
 
-        val expiration = Date()
-        var msec = expiration.time
-        msec += 1000 * 60 * 60 // Add 1 hour
-        expiration.time = msec
-
-        val generatePresignedUrlRequest = GeneratePresignedUrlRequest(bucketName, objectKey)
-        generatePresignedUrlRequest.method = com.amazonaws.HttpMethod.GET
-        generatePresignedUrlRequest.expiration = expiration
-
-        return s3Client.generatePresignedUrl(generatePresignedUrlRequest)
+        return future
     }
 }

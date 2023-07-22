@@ -3,12 +3,14 @@ package com.example.robofriend
 import AwsS3Service
 import DeepgramService
 import android.Manifest
+import android.app.Activity
 import android.content.pm.PackageManager
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.os.Bundle
 import java.io.File
 import android.util.Log
+import android.view.inputmethod.InputMethodManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.Text
 import androidx.compose.material3.Button
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -27,9 +30,13 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
@@ -37,29 +44,50 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.ButtonColors
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.constraintlayout.compose.ConstraintLayout
+import androidx.constraintlayout.compose.Dimension
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import com.aallam.openai.api.BetaOpenAI
+import com.example.compose.AppTheme
 import com.example.robofriend.BuildConfig
 import com.example.robofriend.apis.elevenlabs.ElevenLabsService
 import com.example.robofriend.apis.myopenai.OpenAIApiService
-import com.example.robofriend.ui.theme.RoboFriendTheme
 import com.google.accompanist.insets.navigationBarsWithImePadding
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -68,7 +96,7 @@ import java.io.InputStream
 import kotlin.time.ExperimentalTime
 
 
-class MainActivity : ComponentActivity() {
+class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
     companion object {
         const val MAX_CHUNK_SIZE = 200 // Change this value according to your needs
     }
@@ -76,6 +104,8 @@ class MainActivity : ComponentActivity() {
     private var mediaPlayer: MediaPlayer? = null
     private val isRecording = mutableStateOf(false)
     private val isReplaying = mutableStateOf(false)
+    private val isMuted = mutableStateOf(false)
+    private val replayWhenMuted = mutableStateOf(false)
 
     // Add this line to initialize the S3Service
     private var awsS3Service: AwsS3Service? = null
@@ -83,9 +113,9 @@ class MainActivity : ComponentActivity() {
     private var openaiService: OpenAIApiService? = null
     private var elevenLabsApiService: ElevenLabsService? = null
     private var userInput = mutableStateOf("")
-    private var aiResponse = mutableStateOf("")
     private val lastAIResponseAudio = mutableStateOf<ByteArray?>(null)
     private val conversationHistory = mutableStateListOf<String>()
+    private var lastAIResponseText = mutableStateOf<String?>(null)
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -101,86 +131,259 @@ class MainActivity : ComponentActivity() {
         // ...
 
         setContent {
-            RoboFriendTheme {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(color = MaterialTheme.colorScheme.background)
-                ) {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(bottom = 70.dp),
-                        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 36.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        items(conversationHistory) { item ->
-                            Text(item)
-                        }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .align(Alignment.BottomCenter)
-                            .navigationBarsPadding().imePadding()
-                            .padding(16.dp),
-                        contentAlignment = Alignment.CenterEnd
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            FloatingActionButton(onClick = {
-                                if (isRecording.value) {
-                                    stopRecording()
-                                } else {
-                                    startRecording()
-                                }
-                            }) {
-                                if (isRecording.value) {
-                                    Icon(Icons.Filled.Stop, contentDescription = "Stop Recording")
-                                } else {
-                                    Icon(Icons.Filled.Mic, contentDescription = "Start Recording")
-                                }
-                            }
-                            FloatingActionButton(onClick = {
-                                if (lastAIResponseAudio.value != null) {
-                                    if (isReplaying.value) {
-                                        stopReplaying()
-                                    } else {
-                                        replayLastAIResponse()
-                                    }
-                                }
-                            }) {
-                                if (isReplaying.value) {
-                                    Icon(Icons.Filled.Stop, contentDescription = "Stop Replaying")
-                                } else {
-                                    Icon(Icons.Filled.Replay, contentDescription = "Replay Last AI Response")
-                                }
-                            }
-                            TextField(
-                                value = userInput.value,
-                                onValueChange = { userInput.value = it },
-                                label = { Text("Type your prompt here") },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .padding(start = 8.dp)
-                                    .padding(end = 8.dp)
-                            )
-                            FloatingActionButton(onClick = { getAIResponse(userInput.value) }) {
-                                Icon(Icons.Filled.Send, contentDescription = "Send")
-                            }
-                        }
-                    }
-                }
+            AppTheme {
+                ConstraintLayoutContent()
+//                    Box(
+//                        modifier = Modifier
+//                            .fillMaxWidth(),
+//                        contentAlignment = Alignment.CenterEnd
+//                    ) {
+//                        Row(
+//                            modifier = Modifier.fillMaxWidth(),
+//                            horizontalArrangement = Arrangement.SpaceBetween,
+//                            verticalAlignment = Alignment.CenterVertically
+//                        ) {
+//                            SnackbarHost(
+//                                modifier = Modifier.fillMaxWidth(),
+//                                hostState = snackbarHostState.value
+//                            )
+//                        }
+//                    }
+//                    Box(
+//                        modifier = Modifier
+//                            .fillMaxWidth()
+//                            .align(Alignment.BottomCenter)
+//                            .navigationBarsPadding()
+//                            .imePadding()
+//                            .padding(16.dp),
+//                        contentAlignment = Alignment.CenterEnd
+//                    ) {
+//                        Row(
+//                            modifier = Modifier.fillMaxWidth(),
+//                            horizontalArrangement = Arrangement.SpaceBetween,
+//                            verticalAlignment = Alignment.CenterVertically
+//                        ) {
+//                            Button(
+//                                onClick = { isMuted.value = !isMuted.value },
+//                                modifier = Modifier.padding(16.dp)
+//                            ) {
+//                                Text(if (isMuted.value) "Unmute" else "Mute")
+//                            }
+//                            FloatingActionButton(onClick = {
+//                                if (isRecording.value) {
+//                                    stopRecording()
+//                                } else {
+//                                    startRecording()
+//                                }
+//                            }) {
+//                                if (isRecording.value) {
+//                                    Icon(Icons.Filled.Stop, contentDescription = "Stop Recording")
+//                                } else {
+//                                    Icon(Icons.Filled.Mic, contentDescription = "Start Recording")
+//                                }
+//                            }
+//                            FloatingActionButton(onClick = {
+//                                if (isReplaying.value) {
+//                                    stopReplaying()
+//                                } else {
+//                                    replayLastAIResponse()
+//                                }
+//                            }) {
+//                                if (isReplaying.value) {
+//                                    Icon(Icons.Filled.Stop, contentDescription = "Stop Replaying")
+//                                } else {
+//                                    Icon(Icons.Filled.Replay, contentDescription = "Replay Last AI Response")
+//                                }
+//                            }
+//                            TextField(
+//                                value = userInput.value,
+//                                onValueChange = { userInput.value = it },
+//                                label = { Text("Type your prompt here") },
+//                                modifier = Modifier
+//                                    .weight(1f)
+//                                    .padding(start = 8.dp)
+//                                    .padding(end = 8.dp)
+//                            )
+//                            FloatingActionButton(onClick = { getAIResponse(userInput.value) }) {
+//                                Icon(Icons.Filled.Send, contentDescription = "Send")
+//                            }
+//                        }
+//                    }
+
+
             }
         }
         requestAudioPermissions()
     }
 
+    @Composable
+    fun ConstraintLayoutContent(){
+        val focusManager = LocalFocusManager.current
+        ConstraintLayout(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(color = MaterialTheme.colorScheme.background)
+        ) {
+            // Create references for the composable
+            val (muteButton, recordButton, replayButton, userInputField, sendButton, chatWindow,
+                snackBar) = createRefs()
+
+            LazyColumn(
+                modifier = Modifier
+                    .constrainAs(chatWindow) {
+                        top.linkTo(parent.top, margin = 8.dp)
+                        end.linkTo(parent.end)
+                        bottom.linkTo(userInputField.bottom, margin = 64.dp)
+                        start.linkTo(parent.start)
+                        width = Dimension.fillToConstraints
+                        height = Dimension.fillToConstraints
+                    },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 36.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                items(conversationHistory) { message ->
+                    // Check if the message is from the user or the assistant
+                    val isUserMessage = message.startsWith("USER")
+                    // Apply different styles based on whether the message is from the user or the assistant
+                    MessageBubble(message, isUserMessage)
+                }
+            }
+
+
+            TextButton(
+                onClick = { isMuted.value = !isMuted.value },
+                modifier = Modifier
+                    .constrainAs(muteButton) {
+                        // Add your constraints here
+                        bottom.linkTo(userInputField.top)
+                        end.linkTo(replayButton.start)
+                    }
+            ) {
+                if (isMuted.value) {
+                    Icon(Icons.Filled.VolumeOff, contentDescription = "Unmute")
+                } else {
+                    Icon(Icons.Filled.VolumeUp, contentDescription = "Mute")
+                }
+            }
+
+
+            FloatingActionButton(
+                onClick = { focusManager.clearFocus();
+                    getAIResponse(userInput.value) },
+                modifier = Modifier.constrainAs(sendButton) {
+                    end.linkTo(parent.end, margin = 16.dp)
+                    bottom.linkTo(parent.bottom, margin = 16.dp)
+                }
+            ) {
+                Icon(Icons.Filled.Send, contentDescription = "Send")
+            }
+
+            TextButton(
+                onClick = {
+                    if (isRecording.value) {
+                        stopRecording()
+                    } else {
+                        startRecording()
+                    }
+                },
+                modifier = Modifier.constrainAs(recordButton) {
+                    end.linkTo(parent.end, margin = 16.dp)
+                    bottom.linkTo(sendButton.top)
+                }
+            ) {
+                if (isRecording.value) {
+                    Icon(Icons.Filled.Stop, contentDescription = "Stop Recording")
+                } else {
+                    Icon(Icons.Filled.Mic, contentDescription = "Start Recording")
+                }
+            }
+
+            TextButton(
+                onClick = {
+                    if (isReplaying.value) {
+                        stopReplaying()
+                    } else {
+                        replayLastAIResponse()
+                    }
+                },
+                modifier = Modifier.constrainAs(replayButton) {
+                    bottom.linkTo(userInputField.top)
+                    end.linkTo(recordButton.start)
+                }
+            ) {
+                if (isReplaying.value) {
+                    Icon(Icons.Filled.Stop, contentDescription = "Stop Replaying")
+                } else {
+                    Icon(Icons.Filled.Replay, contentDescription = "Replay Last AI Response")
+                }
+            }
+
+            TextField(
+                value = userInput.value,
+                onValueChange = { userInput.value = it },
+                label = { Text("Type your prompt here") },
+                modifier = Modifier
+                    .constrainAs(userInputField) {
+                        start.linkTo(parent.start, margin = 16.dp)
+                        end.linkTo(sendButton.start, margin = 16.dp)
+                        bottom.linkTo(parent.bottom, margin = 16.dp)
+                        width = Dimension.fillToConstraints
+                    }
+            )
+            if (replayWhenMuted.value){
+                Button(
+                    onClick = { replayWhenMuted.value = false},
+                    modifier = Modifier.constrainAs(snackBar){
+                        bottom.linkTo(userInputField.top, margin = 16.dp)
+                        end.linkTo(recordButton.start, margin = 16.dp)
+                        start.linkTo(parent.start, margin = 16.dp)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    ),
+                    enabled = replayWhenMuted.value,
+                ) {
+                    Text(text = "Unmute first, Please")
+                }
+            }
+
+        }
+    }
+
+    @Composable
+    fun MessageBubble(message: String, isUserMessage: Boolean) {
+        val backgroundColor = if (isUserMessage) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.tertiaryContainer
+        val textColor = if (isUserMessage) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onTertiaryContainer
+        val horizontalAlignment = if (isUserMessage) Alignment.End else Alignment.Start
+        val sub_message = if (isUserMessage) message.subSequence(6, message.lastIndex + 1).toString() else message.subSequence(11, message.lastIndex + 1)
+            .toString()
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp, horizontal = 8.dp),
+            contentAlignment = if(isUserMessage) Alignment.CenterEnd else Alignment.CenterStart
+        ) {
+            Text(
+                text = sub_message,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(color = backgroundColor)
+                    .wrapContentWidth(horizontalAlignment)
+                    .padding(8.dp),
+                color = textColor,
+                textAlign = TextAlign.Start
+            )
+        }
+    }
+
+
+
+
     private fun startRecording() {
         lastAIResponseAudio.value = null
+        lastAIResponseText.value = null
         val fileName = applicationContext.filesDir.absolutePath + "/audio_record.3gp"
 
         mediaRecorder = MediaRecorder().apply {
@@ -213,21 +416,29 @@ class MainActivity : ComponentActivity() {
                 // Upload the file to S3 and get a presigned URL when the recording is stopped
                 val fileName = applicationContext.filesDir.absolutePath + "/audio_record.3gp"
                 val file = File(fileName)
-                val presignedUrl = awsS3Service?.uploadFile(
-                    BuildConfig.AWS_BUCKET_NAME,
+                val future = awsS3Service?.uploadFile(BuildConfig.AWS_BUCKET_NAME,
                     file, "audio_record.3gp")
-                Log.d("AWS", "Presigned URL: $presignedUrl")
+                future?.thenAccept { presignedUrl ->
+                    Log.d("AWS", "Presigned URL: $presignedUrl")
 
-                // Use Deepgram to transcribe the audio
-                if (presignedUrl != null) {
-                    GlobalScope.launch(Dispatchers.Main) {
-                        val transcript = deepgramService?.postAudioUrlForTranscription(presignedUrl.toString())
-                        Log.d("Deepgram", "Transcript: $transcript")
-                        // Send the transcript to OpenAI
-                        val openaiResponse = openaiService?.generateChatCompletion(transcript ?: "")
-                        Log.d("OpenAI", "OpenAI Response: $openaiResponse")
-                        update_list_and_play(transcript, openaiResponse)
+                    // Use Deepgram to transcribe the audio
+                    if (presignedUrl != null) {
+                        GlobalScope.launch(Dispatchers.Main) {
+                            val transcript =
+                                deepgramService?.postAudioUrlForTranscription(presignedUrl.toString())
+                            Log.d("Deepgram", "Transcript: $transcript")
+                            conversationHistory.add("USER: $transcript")
+                            // Send the transcript to OpenAI
+                            val openaiResponse =
+                                openaiService?.generateChatCompletion(transcript ?: "")
+                            Log.d("OpenAI", "OpenAI Response: $openaiResponse")
+                            update_list_and_play(openaiResponse)
+                        }
                     }
+                }?.exceptionally { throwable ->
+                    // An error occurred during the upload
+                    Log.e("AWS_S3", "Upload failed: ${throwable.message}")
+                    null
                 }
 
             } catch (e: RuntimeException) {
@@ -236,34 +447,58 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private suspend fun update_list_and_play(transcript: String?, openaiResponse: String?) {
-        aiResponse.value = "USER: $transcript\n\nASSISTANT: $openaiResponse"
-        conversationHistory.add("USER: $transcript")
+    private suspend fun update_list_and_play(openaiResponse: String?) {
+        lastAIResponseText.value = openaiResponse
         conversationHistory.add("ASSISTANT: $openaiResponse")
+
+        if (!isMuted.value) {
+            playResponse(openaiResponse)
+        }
+    }
+
+    private suspend fun MainActivity.playResponse(openaiResponse: String?) {
         // Split the OpenAI response into chunks
         val responseChunks = splitTextIntoChunks(openaiResponse ?: "", MAX_CHUNK_SIZE)
 
-        // Convert each chunk of the OpenAI response to speech
-        for (chunk in responseChunks) {
-            val audioBytes = withContext(Dispatchers.IO) {
-                elevenLabsApiService?.textToSpeech(chunk)
-            }
-            // Concatenate the audio bytes
-            val newAudioBytes = lastAIResponseAudio.value?.concat(audioBytes ?: ByteArray(0)) ?: audioBytes
-            lastAIResponseAudio.value = newAudioBytes
-
-            // Convert ByteArray to InputStream
-            val audioStream = audioBytes?.inputStream()
-            // Play the audio stream
-            if (audioStream != null) {
-                playAudio(audioStream)
-                // Wait until the audio finishes playing before proceeding to the next chunk
-                while (mediaPlayer?.isPlaying == true) {
-                    delay(100)
+        val audioChunks = responseChunks.drop(1).map { chunk ->
+            coroutineScope {
+                async(Dispatchers.IO) {
+                    elevenLabsApiService?.textToSpeech(chunk)
                 }
-            } else {
-                Log.e("MainActivity", "Failed to convert audio bytes to stream")
             }
+        }
+
+        val firstAudioBytes = withContext(Dispatchers.IO) {
+            elevenLabsApiService?.textToSpeech(responseChunks[0])
+        }
+        process_audio_bytes(firstAudioBytes)
+
+
+        for (audioChunk in audioChunks) {
+            // We use `await` to wait for the audio data to become available
+            val audioBytes = audioChunk.await()
+            // Concatenate the audio bytes
+            process_audio_bytes(audioBytes)
+        }
+    }
+
+    private suspend fun process_audio_bytes(audioBytes: ByteArray?) {
+        // Concatenate the audio bytes
+        val newAudioBytes =
+            lastAIResponseAudio.value?.concat(audioBytes ?: ByteArray(0)) ?: audioBytes
+        lastAIResponseAudio.value = newAudioBytes
+
+        // Convert ByteArray to InputStream
+        val audioStream = audioBytes?.inputStream()
+        // Play the audio stream
+        if (audioStream != null) {
+            playAudio(audioStream)
+            // Wait until the audio finishes playing before proceeding to the next chunk
+            while (mediaPlayer?.isPlaying == true) {
+                delay(1)
+            }
+        } else {
+            Log.e("MainActivity", "Failed to convert audio bytes to stream")
         }
     }
 
@@ -325,25 +560,51 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalTime::class, BetaOpenAI::class)
     private fun getAIResponse(input: String) {
         GlobalScope.launch(Dispatchers.Main) {
+            conversationHistory.add("USER: $input")
+            userInput.value = ""
+            val inputMethodManager = getSystemService(Activity.INPUT_METHOD_SERVICE) as InputMethodManager
+            inputMethodManager.hideSoftInputFromWindow(currentFocus?.windowToken, 0)
             lastAIResponseAudio.value = null
+            lastAIResponseText.value = null
             val openaiResponse = openaiService?.generateChatCompletion(input)
             Log.d("OpenAI", "OpenAI Response: $openaiResponse")
-            userInput.value = ""
-            update_list_and_play(input, openaiResponse)
+            update_list_and_play(openaiResponse)
         }
     }
 
     private fun replayLastAIResponse() {
-        // Convert ByteArray to InputStream
-        isReplaying.value = true
-        val audioStream = lastAIResponseAudio.value?.inputStream()
-        // Play the audio stream
-        if (audioStream != null) {
-            playAudio(audioStream)
+        Log.d("replayLastAIResponseD", "isMuted is: ${isMuted.value}")
+        if (isMuted.value) {
+            this.launch {
+                replayWhenMuted.value = true
+                delay(1000L)
+                replayWhenMuted.value = false
+            }
         } else {
-            Log.e("MainActivity", "Failed to convert audio bytes to stream")
+            isReplaying.value = true
+            Log.d("replayLastAIResponseD", "isMuted is False")
+            val audioStream = lastAIResponseAudio.value?.inputStream()
+            // Play the audio stream
+            if (audioStream != null) {
+                Log.d("replayLastAIResponseD", "audioStream is not null")
+                playAudio(audioStream)
+            } else {
+                Log.d("replayLastAIResponseD", "audioStream is null")
+                Log.d("replayLastAIResponseD", "lastAIResponseAudio is null: ${lastAIResponseAudio.value == null}")
+                Log.d("replayLastAIResponseD", "lastAIResponseText is null: ${lastAIResponseText.value == null}")
+                // if the last message was not converted to speech because it was muted
+                if (lastAIResponseAudio.value == null && lastAIResponseText.value != null) {
+                    // Generate the speech for the last AI response text
+                    GlobalScope.launch(Dispatchers.Main) {
+                        playResponse(lastAIResponseText.value!!)
+                    }
+                } else {
+                    Log.e("MainActivity", "Failed to convert audio bytes to stream")
+                }
+            }
         }
     }
+
 
     private fun stopReplaying() {
         mediaPlayer?.stop()
@@ -368,7 +629,7 @@ class MainActivity : ComponentActivity() {
                 Log.d("splitTextIntoChunksD", "added chunk ${chunks[chunks.lastIndex]}")
                 chunk = StringBuilder(chunk.substring(lastPunctuationIndex + 1 - prev_length))
                 Log.d("splitTextIntoChunksD", "chunk is now $chunk")
-                prev_length = lastPunctuationIndex
+                prev_length = lastPunctuationIndex + 1
                 lastPunctuationIndex = -1
             }
         }
