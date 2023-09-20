@@ -13,7 +13,7 @@ class DeepgramService {
     suspend fun postAudioUrlForTranscription(audioUrl: String): String? {
         val requestBody = RequestBody.create(jsonMediaType, "{\"url\":\"$audioUrl\"}")
         val request = Request.Builder()
-            .url("https://api.deepgram.com/v1/listen?model=nova&punctuate=true")
+            .url("https://api.deepgram.com/v1/listen?detect_language=true&model=nova&punctuate=true")
             .post(requestBody)
             .addHeader("Authorization", "Token ${BuildConfig.DEEPGRAM_TOKEN}")
             .build()
@@ -22,9 +22,9 @@ class DeepgramService {
             try {
                 val response = client.newCall(request).execute()
                 if (response.isSuccessful) {
-                    val jsonResponse = JSONObject(response.body?.string())
+                    val jsonResponse = response.body?.string()?.let { JSONObject(it) }
                     // Extracting the transcript from the nested JSON structure
-                    val results = jsonResponse.optJSONObject("results")
+                    val results = jsonResponse?.optJSONObject("results")
                     val channels = results?.optJSONArray("channels")
                     val channel = channels?.optJSONObject(0)
                     val alternatives = channel?.optJSONArray("alternatives")
