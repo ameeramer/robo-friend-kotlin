@@ -5,13 +5,14 @@ import okhttp3.*
 import java.io.IOException
 import org.json.JSONObject
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 
 class DeepgramService {
     private val client = OkHttpClient()
     private val jsonMediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
 
     suspend fun postAudioUrlForTranscription(audioUrl: String): String? {
-        val requestBody = RequestBody.create(jsonMediaType, "{\"url\":\"$audioUrl\"}")
+        val requestBody = "{\"url\":\"$audioUrl\"}".toRequestBody(jsonMediaType)
         val request = Request.Builder()
             .url("https://api.deepgram.com/v1/listen?detect_language=true&model=nova&punctuate=true")
             .post(requestBody)

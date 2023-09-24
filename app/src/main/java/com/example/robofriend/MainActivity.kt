@@ -16,12 +16,6 @@ import android.util.Log
 import android.view.inputmethod.InputMethodManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -32,14 +26,11 @@ import androidx.compose.material3.Button
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Replay
@@ -54,18 +45,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.constraintlayout.compose.ConstraintLayout
@@ -82,22 +71,44 @@ import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.MainScope
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.Response
 import java.io.IOException
 import java.io.InputStream
 import java.lang.Exception
 import kotlin.time.ExperimentalTime
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import java.util.concurrent.ConcurrentLinkedQueue
+
+
+@Serializable
+data class Delta(val role: String? = null, val content: String? = null)
+
+@Serializable
+data class Choice(val index: Int, val delta: Delta?, val finish_reason: String?)
+
+@Serializable
+data class OpenAIResponse(
+    val id: String,
+    val `object`: String,
+    val created: Long,
+    val model: String,
+    val choices: List<Choice>
+)
+
+val json = Json { ignoreUnknownKeys = true }
 
 
 class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
     companion object {
-        const val MAX_CHUNK_SIZE = 200 // Change this value according to your needs
+        const val MIN_CHUNK_SIZE = 50 // Change this value according to your needs
         const val LOADING_MESSAGE = "LOADING..."
     }
+
     private var mediaRecorder: MediaRecorder? = null
     private var mediaPlayer: MediaPlayer? = null
     private val isRecording = mutableStateOf(false)
@@ -116,28 +127,41 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
     private val allConversationHistory = mutableStateListOf<String>()
     private var lastAIResponseText = mutableStateOf<String?>(null)
 
+    private var currentChunkToSpeak = StringBuilder()
+    private val textChunksQueue = ConcurrentLinkedQueue<String>()
+    private val audioChunksQueue = ConcurrentLinkedQueue<ByteArray?>()
+    private val handleAudiolastPunctuationIndex = mutableStateOf(-1)
+    private val lastChunk = mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        handleAudio()
+        handlePlayAudio()
+
         WindowCompat.setDecorFitsSystemWindows(window, false)
         awsS3Service = AwsS3Service(this)
         deepgramService = DeepgramService()
-        openaiService = OpenAIApiService("gpt-4","You are a helpful assistant!")
-        elevenLabsApiService = ElevenLabsService("eleven_multilingual_v1", 0.5f,
-            0.85f, 0.5f, false)
+        openaiService = OpenAIApiService("gpt-4", "You are a helpful assistant!")
+        elevenLabsApiService = ElevenLabsService(
+            "eleven_multilingual_v1", 0.5f, 0.85f, 0.5f, false
+        )
 
-        awsS3Service?.downloadConversationHistory(this, BuildConfig.AWS_BUCKET_NAME, "conversation_history.json")
-            ?.thenAccept { history ->
-                allConversationHistory.clear()
-                allConversationHistory.addAll(history)
-            }?.exceptionally { null }?.handle { e, t -> Log.e("AWSS3", "error downloading conversation history: $t" ) }
+        awsS3Service?.downloadConversationHistory(
+            this, BuildConfig.AWS_BUCKET_NAME, "conversation_history.json"
+        )?.thenAccept { history ->
+            allConversationHistory.clear()
+            allConversationHistory.addAll(history)
+        }?.exceptionally { null }
+            ?.handle { _, t -> Log.e("AWSS3", "error downloading conversation history: $t") }
 
         awsS3Service?.downloadConversationHistory(this, BuildConfig.AWS_BUCKET_NAME, "context.json")
             ?.thenAccept { history ->
                 val systemMessage = history[0].substring(8)
                 openaiService = OpenAIApiService("gpt-4", systemMessage)
                 openaiService?.loadContextHistory(history.drop(1))
-            }?.exceptionally { null }?.handle { e, t -> Log.e("AWSS3", "error downloading context: $t" ) }
-
+            }?.exceptionally { null }
+            ?.handle { _, t -> Log.e("AWSS3", "error downloading context: $t") }
 
 
         // ...
@@ -151,7 +175,7 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
     }
 
     @Composable
-    fun ConstraintLayoutContent(){
+    fun ConstraintLayoutContent() {
         val focusManager = LocalFocusManager.current
         ConstraintLayout(
             modifier = Modifier
@@ -159,19 +183,17 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
                 .background(color = MaterialTheme.colorScheme.background)
         ) {
             // Create references for the composable
-            val (muteButton, recordButton, replayButton, userInputField, sendButton, chatWindow,
-                snackBar) = createRefs()
+            val (muteButton, recordButton, replayButton, userInputField, sendButton, chatWindow, snackBar) = createRefs()
 
             LazyColumn(
-                modifier = Modifier
-                    .constrainAs(chatWindow) {
-                        top.linkTo(parent.top, margin = 8.dp)
-                        end.linkTo(parent.end)
-                        bottom.linkTo(userInputField.bottom, margin = 64.dp)
-                        start.linkTo(parent.start)
-                        width = Dimension.fillToConstraints
-                        height = Dimension.fillToConstraints
-                    },
+                modifier = Modifier.constrainAs(chatWindow) {
+                    top.linkTo(parent.top, margin = 8.dp)
+                    end.linkTo(parent.end)
+                    bottom.linkTo(userInputField.bottom, margin = 64.dp)
+                    start.linkTo(parent.start)
+                    width = Dimension.fillToConstraints
+                    height = Dimension.fillToConstraints
+                },
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 36.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
@@ -184,15 +206,12 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
             }
 
 
-            TextButton(
-                onClick = { isMuted.value = !isMuted.value },
-                modifier = Modifier
-                    .constrainAs(muteButton) {
-                        // Add your constraints here
-                        bottom.linkTo(userInputField.top)
-                        end.linkTo(replayButton.start)
-                    }
-            ) {
+            TextButton(onClick = { isMuted.value = !isMuted.value },
+                modifier = Modifier.constrainAs(muteButton) {
+                    // Add your constraints here
+                    bottom.linkTo(userInputField.top)
+                    end.linkTo(replayButton.start)
+                }) {
                 if (isMuted.value) {
                     Icon(Icons.Filled.VolumeOff, contentDescription = "Unmute")
                 } else {
@@ -201,30 +220,26 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
             }
 
 
-            FloatingActionButton(
-                onClick = { focusManager.clearFocus();
-                    getAIResponse(userInput.value) },
-                modifier = Modifier.constrainAs(sendButton) {
-                    end.linkTo(parent.end, margin = 16.dp)
-                    bottom.linkTo(parent.bottom, margin = 16.dp)
-                }
-            ) {
+            FloatingActionButton(onClick = {
+                focusManager.clearFocus()
+                getAIResponse(userInput.value)
+            }, modifier = Modifier.constrainAs(sendButton) {
+                end.linkTo(parent.end, margin = 16.dp)
+                bottom.linkTo(parent.bottom, margin = 16.dp)
+            }) {
                 Icon(Icons.Filled.Send, contentDescription = "Send")
             }
 
-            TextButton(
-                onClick = {
-                    if (isRecording.value) {
-                        stopRecording()
-                    } else {
-                        startRecording()
-                    }
-                },
-                modifier = Modifier.constrainAs(recordButton) {
-                    end.linkTo(parent.end, margin = 16.dp)
-                    bottom.linkTo(sendButton.top)
+            TextButton(onClick = {
+                if (isRecording.value) {
+                    stopRecording()
+                } else {
+                    startRecording()
                 }
-            ) {
+            }, modifier = Modifier.constrainAs(recordButton) {
+                end.linkTo(parent.end, margin = 16.dp)
+                bottom.linkTo(sendButton.top)
+            }) {
                 if (isRecording.value) {
                     Icon(Icons.Filled.Stop, contentDescription = "Stop Recording")
                 } else {
@@ -232,19 +247,16 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
                 }
             }
 
-            TextButton(
-                onClick = {
-                    if (isReplaying.value) {
-                        stopReplaying()
-                    } else {
-                        replayLastAIResponse()
-                    }
-                },
-                modifier = Modifier.constrainAs(replayButton) {
-                    bottom.linkTo(userInputField.top)
-                    end.linkTo(recordButton.start)
+            TextButton(onClick = {
+                if (isReplaying.value) {
+                    stopReplaying()
+                } else {
+                    replayLastAIResponse()
                 }
-            ) {
+            }, modifier = Modifier.constrainAs(replayButton) {
+                bottom.linkTo(userInputField.top)
+                end.linkTo(recordButton.start)
+            }) {
                 if (isReplaying.value) {
                     Icon(Icons.Filled.Stop, contentDescription = "Stop Replaying")
                 } else {
@@ -252,22 +264,19 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
                 }
             }
 
-            TextField(
-                value = userInput.value,
+            TextField(value = userInput.value,
                 onValueChange = { userInput.value = it },
                 label = { Text("Type your prompt here") },
-                modifier = Modifier
-                    .constrainAs(userInputField) {
-                        start.linkTo(parent.start, margin = 16.dp)
-                        end.linkTo(sendButton.start, margin = 16.dp)
-                        bottom.linkTo(parent.bottom, margin = 16.dp)
-                        width = Dimension.fillToConstraints
-                    }
-            )
-            if (replayWhenMuted.value){
+                modifier = Modifier.constrainAs(userInputField) {
+                    start.linkTo(parent.start, margin = 16.dp)
+                    end.linkTo(sendButton.start, margin = 16.dp)
+                    bottom.linkTo(parent.bottom, margin = 16.dp)
+                    width = Dimension.fillToConstraints
+                })
+            if (replayWhenMuted.value) {
                 Button(
-                    onClick = { replayWhenMuted.value = false},
-                    modifier = Modifier.constrainAs(snackBar){
+                    onClick = { replayWhenMuted.value = false },
+                    modifier = Modifier.constrainAs(snackBar) {
                         bottom.linkTo(userInputField.top, margin = 16.dp)
                         end.linkTo(recordButton.start, margin = 16.dp)
                         start.linkTo(parent.start, margin = 16.dp)
@@ -285,17 +294,14 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
         }
     }
 
-    @Composable
-    fun Modifier.copyToClipboardOnClick(textToCopy: String): Modifier {
+    private fun Modifier.copyToClipboardOnClick(textToCopy: String): Modifier = composed {
         val context = LocalContext.current
         val textToCopyState = rememberUpdatedState(textToCopy)
 
-        return this.clickable(
+        this.clickable(
             indication = null,
-            interactionSource = remember { MutableInteractionSource() }
-        ) {
-            val clipboard =
-                context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            interactionSource = remember { MutableInteractionSource() }) {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             val clip = ClipData.newPlainText("Copied Text", textToCopyState.value)
             clipboard.setPrimaryClip(clip)
             // You can show a toast or some other indication that the text has been copied
@@ -305,26 +311,27 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
     @Composable
     fun MessageBubble(message: String, isUserMessage: Boolean) {
 
-        val backgroundColor = if (isUserMessage) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.tertiaryContainer
-        val textColor = if (isUserMessage) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onTertiaryContainer
+        val backgroundColor =
+            if (isUserMessage) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.tertiaryContainer
+        val textColor =
+            if (isUserMessage) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onTertiaryContainer
         val horizontalAlignment = if (isUserMessage) Alignment.End else Alignment.Start
-        var sub_message: String? = null
-        sub_message = if (message == LOADING_MESSAGE){
+        val subMessage: String = if (message == LOADING_MESSAGE) {
             "..."
         } else {
-            if (isUserMessage) message.subSequence(6, message.lastIndex + 1).toString() else message.subSequence(11, message.lastIndex + 1)
-                .toString()
+            if (isUserMessage) message.subSequence(6, message.lastIndex + 1)
+                .toString() else message.subSequence(11, message.lastIndex + 1).toString()
         }
 
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 4.dp, horizontal = 8.dp)
-                .copyToClipboardOnClick(sub_message), // Apply the custom modifier here
+                .copyToClipboardOnClick(subMessage), // Apply the custom modifier here
             contentAlignment = if (isUserMessage) Alignment.CenterEnd else Alignment.CenterStart
         ) {
             Text(
-                text = sub_message,
+                text = subMessage,
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
                     .background(color = backgroundColor)
@@ -337,14 +344,7 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
     }
 
 
-
-
-
-
-
     private fun startRecording() {
-        lastAIResponseAudio.value = null
-        lastAIResponseText.value = null
         val fileName = applicationContext.filesDir.absolutePath + "/audio_record.3gp"
 
         mediaRecorder = MediaRecorder().apply {
@@ -377,8 +377,9 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
                 // Upload the file to S3 and get a presigned URL when the recording is stopped
                 val fileName = applicationContext.filesDir.absolutePath + "/audio_record.3gp"
                 val file = File(fileName)
-                val future = awsS3Service?.uploadFile(BuildConfig.AWS_BUCKET_NAME,
-                    file, "audio_record.3gp")
+                val future = awsS3Service?.uploadFile(
+                    BuildConfig.AWS_BUCKET_NAME, file, "audio_record.3gp"
+                )
                 future?.thenAccept { presignedUrl ->
                     Log.d("AWS", "Presigned URL: $presignedUrl")
 
@@ -389,13 +390,19 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
                                 deepgramService?.postAudioUrlForTranscription(presignedUrl.toString())
                             Log.d("Deepgram", "Transcript: $transcript")
                             conversationHistory.add("USER: $transcript")
-                            // Save the conversation history after the AI response is added
+                            // Save the conversation history after the user prompt is added
                             uploadConversationHistory()
                             // Send the transcript to OpenAI
+
                             val openaiResponse =
-                                openaiService?.generateChatCompletion(transcript ?: "")
+                                withContext(Dispatchers.IO) {  // Move to IO Dispatcher for Network and IO operations
+                                    openaiService?.generateChatCompletion(transcript ?: "")
+                                }
+
                             Log.d("OpenAI", "OpenAI Response: $openaiResponse")
-                            update_list_and_play(openaiResponse)
+                            if (openaiResponse != null) {
+                                updateListAndPlay(openaiResponse)
+                            }
                         }
                     }
                 }?.exceptionally { throwable ->
@@ -412,9 +419,7 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
 
     private fun uploadConversationHistory() {
         val futureAWSOpenAI = openaiService?.uploadContextToS3(
-            this,
-            BuildConfig.AWS_BUCKET_NAME,
-            awsS3Service
+            this, BuildConfig.AWS_BUCKET_NAME, awsS3Service
         )
         futureAWSOpenAI?.thenAccept { url ->
             Log.d("AWS_S3_CONTEXT", "Conversation history uploaded to: $url")
@@ -438,114 +443,117 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
         }
     }
 
-    private suspend fun update_list_and_play(openaiResponse: String?) {
-        lastAIResponseText.value = openaiResponse
-        conversationHistory.remove(LOADING_MESSAGE)
-        conversationHistory.add("ASSISTANT: $openaiResponse")
-        openaiService?.addAssistanceResponse(openaiResponse)
-        uploadConversationHistory()
+    private suspend fun updateListAndPlay(response: Response?) {
+        lastAIResponseAudio.value = null
+        lastAIResponseText.value = null
+        currentChunkToSpeak.clear()
+        textChunksQueue.clear()
+        handleAudiolastPunctuationIndex.value = -1
+        lastChunk.value = false
+        val responseBuilder = StringBuilder()
 
-        if (!isMuted.value) {
-            try{
-                playResponse(openaiResponse)
-            }
-            catch (e: Exception){
-                Log.e("Elevenlabs", "could not play audio")
-            }
-        }
-    }
+        // Add a placeholder message to the list which will get updated in real-time
+        conversationHistory.add("ASSISTANT: typing...")
 
-    private suspend fun MainActivity.playResponse(openaiResponse: String?) {
-        // Split the OpenAI response into chunks
-        val responseChunks = splitTextIntoChunks(openaiResponse ?: "", MAX_CHUNK_SIZE)
+        withContext(Dispatchers.IO) {
+            if (response != null) {
+                response.body?.source()?.let { source ->
+                    while (!source.exhausted()) {
+                        val line = source.readUtf8LineStrict()
+                        val prefix = "data: "
+                        if (line.startsWith(prefix)) {
+                            val linewithoutprefix = line.removePrefix(prefix)
+                            if (linewithoutprefix == "[DONE]") {
+                                // Final updates (if needed)
+                                withContext(Dispatchers.Main) {
+                                    openaiService?.addAssistanceResponse(responseBuilder.toString())
+                                    uploadConversationHistory()
+                                    lastAIResponseText.value = responseBuilder.toString()
+                                    lastChunk.value = true
+                                }
+                                return@let
+                            }
+                            val chunk = json.decodeFromString<OpenAIResponse>(linewithoutprefix)
+                            val chunkContent = chunk.choices[0].delta?.content ?: ""
+                            responseBuilder.append(chunkContent)
 
-        val audioChunks = responseChunks.drop(1).map { chunk ->
-            coroutineScope {
-                async(Dispatchers.IO) {
-                    elevenLabsApiService?.textToSpeech(chunk)
+                            // Add the chunk to the queue for audio processing
+                            textChunksQueue.add(chunkContent)
+
+                            withContext(Dispatchers.Main) {
+                                conversationHistory[conversationHistory.size - 1] =
+                                    "ASSISTANT: $responseBuilder"
+                            }
+                        }
+                    }
                 }
             }
         }
-
-        val firstAudioBytes = withContext(Dispatchers.IO) {
-            elevenLabsApiService?.textToSpeech(responseChunks[0])
-        }
-        process_audio_bytes(firstAudioBytes)
-
-
-        for (audioChunk in audioChunks) {
-            // We use `await` to wait for the audio data to become available
-            val audioBytes = audioChunk.await()
-            // Concatenate the audio bytes
-            process_audio_bytes(audioBytes)
-        }
     }
 
-    private suspend fun process_audio_bytes(audioBytes: ByteArray?) {
-        // Concatenate the audio bytes
-        val newAudioBytes =
-            lastAIResponseAudio.value?.concat(audioBytes ?: ByteArray(0)) ?: audioBytes
-        lastAIResponseAudio.value = newAudioBytes
 
-        // Convert ByteArray to InputStream
-        val audioStream = audioBytes?.inputStream()
-        // Play the audio stream
-        if (audioStream != null) {
-            playAudio(audioStream)
-            // Wait until the audio finishes playing before proceeding to the next chunk
-            while (mediaPlayer?.isPlaying == true) {
-                delay(1)
-            }
-        } else {
-            Log.e("MainActivity", "Failed to convert audio bytes to stream")
-        }
-    }
-
-    private fun startPlaying() {
-        val fileName = applicationContext.filesDir.absolutePath + "/audio_record.3gp"
-        val file = File(fileName)
-        if (!file.exists()) {
-            Log.d("MainActivity", "Audio file does not exist: $fileName")
+    private suspend fun MainActivity.playResponse(openaiResponse: String?) {
+        if (openaiResponse == null || openaiResponse == "") {
             return
         }
-        mediaPlayer = MediaPlayer().apply {
-            try {
-                setDataSource(fileName)
-                prepare()
-                start()
-            } catch (e: IOException) {
-                e.printStackTrace()
+        if (!isMuted.value){ // TODO: remove condition. eventually we'd want to always do
+            // text-to-speech in the background even if muted,
+            // so the user can replay after un-muting and not wait for the service to respond
+            // now I am keeping it this way to decrease billing of ElevenLabs while developing.
+            val audio = withContext(Dispatchers.IO) {
+                elevenLabsApiService?.textToSpeech(openaiResponse)
             }
+            audioChunksQueue.add(audio)
         }
     }
 
-    private fun stopPlaying() {
-        mediaPlayer?.release()
-        mediaPlayer = null
+    @OptIn(DelicateCoroutinesApi::class)
+    fun handlePlayAudio() = GlobalScope.launch(Dispatchers.IO) {
+        while (isActive) {
+            val nextAudioChunk = audioChunksQueue.poll()
+            if (nextAudioChunk != null) {
+                // Concatenate the audio bytes
+                val newAudioBytes =
+                    lastAIResponseAudio.value?.concat(nextAudioChunk) ?: nextAudioChunk
+                lastAIResponseAudio.value = newAudioBytes
+
+                // Convert ByteArray to InputStream
+                val audioStream = nextAudioChunk.inputStream()
+                // Play the audio stream
+                playAudio(audioStream)
+                // Wait until the audio finishes playing before proceeding to the next chunk
+                while (mediaPlayer?.isPlaying == true) {
+                    delay(1)
+                }
+            }
+        }
     }
 
     private fun requestAudioPermissions() {
         if (ContextCompat.checkSelfPermission(
-                this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
-        {
+                this, Manifest.permission.RECORD_AUDIO
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 0)
         }
     }
 
     private fun playAudio(audioStream: InputStream) {
         // Convert InputStream to a file or a suitable format for MediaPlayer
-        val file = inputStreamToFile(audioStream)
+        if (!isMuted.value) {
+            val file = inputStreamToFile(audioStream)
 
-        mediaPlayer = MediaPlayer().apply {
-            try {
-                setDataSource(file.absolutePath)
-                prepare()
-                start()
-                setOnCompletionListener {
-                    isReplaying.value = false
+            mediaPlayer = MediaPlayer().apply {
+                try {
+                    setDataSource(file.absolutePath)
+                    prepare()
+                    start()
+                    setOnCompletionListener {
+                        isReplaying.value = false
+                    }
+                } catch (e: IOException) {
+                    e.printStackTrace()
                 }
-            } catch (e: IOException) {
-                e.printStackTrace()
             }
         }
     }
@@ -559,20 +567,131 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
     @OptIn(ExperimentalTime::class, BetaOpenAI::class, DelicateCoroutinesApi::class)
     private fun getAIResponse(input: String) {
         GlobalScope.launch(Dispatchers.Main) {
-            conversationHistory.add("USER: $input")
-            conversationHistory.add(LOADING_MESSAGE)
-            uploadConversationHistory()
-            userInput.value = ""
-            val inputMethodManager = getSystemService(Activity.INPUT_METHOD_SERVICE) as InputMethodManager
-            inputMethodManager.hideSoftInputFromWindow(currentFocus?.windowToken, 0)
             lastAIResponseAudio.value = null
             lastAIResponseText.value = null
-            val openaiResponse = openaiService?.generateChatCompletion(input)
-            Log.d("OpenAI", "OpenAI Response: $openaiResponse")
-            update_list_and_play(openaiResponse)
+            currentChunkToSpeak.clear()
+            textChunksQueue.clear()
+            handleAudiolastPunctuationIndex.value = -1
+            lastChunk.value = false
+
+            conversationHistory.add("USER: $input")
+            userInput.value = ""
+            val inputMethodManager =
+                getSystemService(Activity.INPUT_METHOD_SERVICE) as InputMethodManager
+            inputMethodManager.hideSoftInputFromWindow(currentFocus?.windowToken, 0)
+
+            // Add a placeholder message to the list which will get updated in real-time
+            conversationHistory.add("ASSISTANT: typing...")
+            val responseBuilder = StringBuilder()
+
+            val response =
+                withContext(Dispatchers.IO) {  // Move to IO Dispatcher for Network and IO operations
+                    openaiService?.generateChatCompletion(input)
+                }
+
+            if (response != null) {
+                withContext(Dispatchers.IO) {
+                    response.body?.source()?.let { source ->
+                        while (!source.exhausted()) {
+                            val line = source.readUtf8LineStrict()
+                            val prefix = "data: "
+                            if (line.startsWith(prefix)) {
+                                val linewithoutprefix = line.removePrefix(prefix)
+                                if (linewithoutprefix == "[DONE]") {
+                                    uploadConversationHistory()
+                                    lastAIResponseText.value = responseBuilder.toString()
+                                    lastChunk.value = true
+                                    return@let
+                                }
+                                val chunk = json.decodeFromString<OpenAIResponse>(linewithoutprefix)
+                                val chunkContent = chunk.choices[0].delta?.content ?: ""
+                                responseBuilder.append(chunkContent)
+
+                                // Add the chunk to the queue for audio processing
+                                textChunksQueue.add(chunkContent)
+
+                                // Switch to Main dispatcher just for UI update
+                                withContext(Dispatchers.Main) {
+                                    conversationHistory[conversationHistory.size - 1] =
+                                        "ASSISTANT: $responseBuilder"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
+
+    @OptIn(DelicateCoroutinesApi::class)
+    fun handleAudio() = GlobalScope.launch(Dispatchers.IO) {
+        while (isActive) {
+            val nextTextChunk = textChunksQueue.poll()
+            if (nextTextChunk != null || currentChunkToSpeak.isNotEmpty()) {
+                try {
+                    if (nextTextChunk != null) {
+                        currentChunkToSpeak.append(nextTextChunk)
+                    }
+
+                    if (currentChunkToSpeak.contains('.') && currentChunkToSpeak.lastIndexOf('.') > handleAudiolastPunctuationIndex.value) {
+                        handleAudiolastPunctuationIndex.value = currentChunkToSpeak.lastIndexOf('.')
+                    }
+
+                    if (currentChunkToSpeak.contains('!') && currentChunkToSpeak.lastIndexOf('!') > handleAudiolastPunctuationIndex.value) {
+                        handleAudiolastPunctuationIndex.value = currentChunkToSpeak.lastIndexOf('!')
+                    }
+
+                    if (currentChunkToSpeak.contains('?') && currentChunkToSpeak.lastIndexOf('?') > handleAudiolastPunctuationIndex.value) {
+                        handleAudiolastPunctuationIndex.value = currentChunkToSpeak.lastIndexOf('?')
+                    }
+
+                    if (currentChunkToSpeak.contains('\n') && currentChunkToSpeak.lastIndexOf('\n') > handleAudiolastPunctuationIndex.value) {
+                        handleAudiolastPunctuationIndex.value =
+                            currentChunkToSpeak.lastIndexOf('\n')
+                    }
+
+                    if (handleAudiolastPunctuationIndex.value >= MIN_CHUNK_SIZE) {
+                        Log.d("playResponseWhole", currentChunkToSpeak.toString())
+                        Log.d(
+                            "playResponseLastSign", handleAudiolastPunctuationIndex.value.toString()
+                        )
+                        Log.d(
+                            "playResponseTrimmed", currentChunkToSpeak.substring(
+                                0, handleAudiolastPunctuationIndex.value + 1
+                            )
+                        )
+                        playResponse(
+                            currentChunkToSpeak.substring(
+                                0, handleAudiolastPunctuationIndex.value + 1
+                            )
+                        )
+                        currentChunkToSpeak = StringBuilder(
+                            currentChunkToSpeak.substring(handleAudiolastPunctuationIndex.value + 1)
+                        )
+                        handleAudiolastPunctuationIndex.value = -1
+                    } else {
+                        if (textChunksQueue.isEmpty() && lastChunk.value && (currentChunkToSpeak.endsWith(
+                                '.'
+                            ) || currentChunkToSpeak.endsWith('!') || currentChunkToSpeak.endsWith(
+                                '?'
+                            ) || currentChunkToSpeak.endsWith('\n'))
+                        ) {
+                            playResponse(currentChunkToSpeak.toString())
+                            currentChunkToSpeak.clear()
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("Elevenlabs", "could not play audio")
+                }
+            } else {
+                delay(100)  // 100 ms
+            }
+        }
+    }
+
+
+    @OptIn(DelicateCoroutinesApi::class)
     private fun replayLastAIResponse() {
         Log.d("replayLastAIResponseD", "isMuted is: ${isMuted.value}")
         if (isMuted.value) {
@@ -591,16 +710,21 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
                 playAudio(audioStream)
             } else {
                 Log.d("replayLastAIResponseD", "audioStream is null")
-                Log.d("replayLastAIResponseD", "lastAIResponseAudio is null: ${lastAIResponseAudio.value == null}")
-                Log.d("replayLastAIResponseD", "lastAIResponseText is null: ${lastAIResponseText.value == null}")
+                Log.d(
+                    "replayLastAIResponseD",
+                    "lastAIResponseAudio is null: ${lastAIResponseAudio.value == null}"
+                )
+                Log.d(
+                    "replayLastAIResponseD",
+                    "lastAIResponseText is null: ${lastAIResponseText.value == null}"
+                )
                 // if the last message was not converted to speech because it was muted
                 if (lastAIResponseAudio.value == null && lastAIResponseText.value != null) {
                     // Generate the speech for the last AI response text
                     GlobalScope.launch(Dispatchers.Main) {
-                        try{
+                        try {
                             playResponse(lastAIResponseText.value!!)
-                        }
-                        catch (e: Exception){
+                        } catch (e: Exception) {
                             Log.e("Elevenlabs", "could not play audio")
                         }
                     }
@@ -617,37 +741,7 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
         isReplaying.value = false
     }
 
-    fun splitTextIntoChunks(text: String, maxSize: Int): List<String> {
-        val chunks = mutableListOf<String>()
-        var chunk = StringBuilder()
-        var lastPunctuationIndex = -1
-        var prev_length = 0
-
-        for ((i, c) in text.withIndex()) {
-            chunk.append(c)
-
-            if (c == '.' || c == '!' || c == '?' || c == '\n') {
-                lastPunctuationIndex = i
-            }
-
-            if (chunk.length >= maxSize && lastPunctuationIndex != -1) {
-                chunks.add(chunk.substring(0, lastPunctuationIndex + 1 - prev_length))
-                Log.d("splitTextIntoChunksD", "added chunk ${chunks[chunks.lastIndex]}")
-                chunk = StringBuilder(chunk.substring(lastPunctuationIndex + 1 - prev_length))
-                Log.d("splitTextIntoChunksD", "chunk is now $chunk")
-                prev_length = lastPunctuationIndex + 1
-                lastPunctuationIndex = -1
-            }
-        }
-
-        if (chunk.isNotEmpty()) {
-            chunks.add(chunk.toString())
-        }
-
-        return chunks
-    }
-
-    fun ByteArray.concat(other: ByteArray): ByteArray {
+    private fun ByteArray.concat(other: ByteArray): ByteArray {
         val result = ByteArray(this.size + other.size)
         System.arraycopy(this, 0, result, 0, this.size)
         System.arraycopy(other, 0, result, this.size, other.size)
