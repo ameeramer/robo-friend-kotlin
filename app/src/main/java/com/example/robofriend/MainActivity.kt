@@ -17,6 +17,7 @@ import android.view.inputmethod.InputMethodManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -39,6 +40,7 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -56,6 +58,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.constraintlayout.compose.ConstraintLayout
 import androidx.constraintlayout.compose.Dimension
@@ -130,6 +133,7 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
     private var currentChunkToSpeak = StringBuilder()
     private val textChunksQueue = ConcurrentLinkedQueue<String>()
     private val audioChunksQueue = ConcurrentLinkedQueue<ByteArray?>()
+    private val handleMemoryQueue = ConcurrentLinkedQueue<Boolean>()
     private val handleAudiolastPunctuationIndex = mutableStateOf(-1)
     private val lastChunk = mutableStateOf(false)
 
@@ -138,6 +142,7 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
 
         handleAudio()
         handlePlayAudio()
+        handleBotMemory()
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
         awsS3Service = AwsS3Service(this)
@@ -162,9 +167,6 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
                 openaiService?.loadContextHistory(history.drop(1))
             }?.exceptionally { null }
             ?.handle { _, t -> Log.e("AWSS3", "error downloading context: $t") }
-
-
-        // ...
 
         setContent {
             AppTheme {
@@ -294,6 +296,24 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
         }
     }
 
+    @Preview
+    @Composable
+    fun PreviewLayout(){
+        ConstraintLayoutContent()
+    }
+
+    @Preview
+    @Composable
+    fun PreviewMessageBubbleUser(){
+        MessageBubble("USER: hello", true)
+    }
+
+    @Preview
+    @Composable
+    fun PreviewMessageBubbleAssistant(){
+        MessageBubble("ASSISTANT: As an AI I don't have feeling, but I am here and ready to assist you, how can I help you today?", false)
+    }
+
     private fun Modifier.copyToClipboardOnClick(textToCopy: String): Modifier = composed {
         val context = LocalContext.current
         val textToCopyState = rememberUpdatedState(textToCopy)
@@ -323,12 +343,13 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
                 .toString() else message.subSequence(11, message.lastIndex + 1).toString()
         }
 
-        Box(
+        Card(
             modifier = Modifier
                 .fillMaxWidth()
+                .clip(RoundedCornerShape(50))
                 .padding(vertical = 4.dp, horizontal = 8.dp)
                 .copyToClipboardOnClick(subMessage), // Apply the custom modifier here
-            contentAlignment = if (isUserMessage) Alignment.CenterEnd else Alignment.CenterStart
+            //contentAlignment = if (isUserMessage) Alignment.CenterEnd else Alignment.CenterStart
         ) {
             Text(
                 text = subMessage,
@@ -393,9 +414,9 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
                             // Save the conversation history after the user prompt is added
                             uploadConversationHistory()
                             // Send the transcript to OpenAI
-
+                            handleMemoryQueue.add(true)
                             val openaiResponse =
-                                withContext(Dispatchers.IO) {  // Move to IO Dispatcher for Network and IO operations
+                                withContext(Dispatchers.IO) {
                                     openaiService?.generateChatCompletion(transcript ?: "")
                                 }
 
@@ -583,7 +604,7 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
             // Add a placeholder message to the list which will get updated in real-time
             conversationHistory.add("ASSISTANT: typing...")
             val responseBuilder = StringBuilder()
-
+            handleMemoryQueue.add(true)
             val response =
                 withContext(Dispatchers.IO) {  // Move to IO Dispatcher for Network and IO operations
                     openaiService?.generateChatCompletion(input)
@@ -619,6 +640,19 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    @OptIn(DelicateCoroutinesApi::class)
+    fun handleBotMemory() = GlobalScope.launch(Dispatchers.IO) {
+        while (isActive) {
+            val requestForMemoryCheck = handleMemoryQueue.poll()
+            if (requestForMemoryCheck != null){
+                Log.d("OpenAIContextTokens", openaiService?.numTokensFromMessages().toString())
+            }
+            else{
+                delay(100)
             }
         }
     }

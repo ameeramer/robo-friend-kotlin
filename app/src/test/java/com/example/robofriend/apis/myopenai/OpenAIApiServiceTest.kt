@@ -31,16 +31,17 @@ class OpenAIApiServiceTest {
                 val line = source.readUtf8LineStrict()
                 val prefix = "data: "
                 if (line.startsWith(prefix)) {
-                    val linewithoutprefix = line.removePrefix(prefix)
-                    if (linewithoutprefix == "[DONE]"){
+                    val lineWithoutPrefix = line.removePrefix(prefix)
+                    if (lineWithoutPrefix == "[DONE]"){
                         break
                     }
-                    val obj = json.decodeFromString<OpenAIResponse>(linewithoutprefix)
+                    val obj = json.decodeFromString<OpenAIResponse>(lineWithoutPrefix)
                     val content = obj.choices.firstOrNull()?.delta?.content ?: ""
                     println(content)
                     // Here you can update your conversationHistory with `content`
                 }
             }
         }
+        println(service.numTokensFromMessages())
     }
 }
