@@ -49,6 +49,7 @@ class OpenAIApiService(private var modelId: String, systemMessage: String) {
     fun generateChatCompletion(prompt: String): Response {
         // Append the new user message to the list
         messages.add(JSONObject(mapOf("role" to "user", "content" to prompt)))
+        messagesAsStrings.add("ASSISTANT: $prompt")
 
         // Initialize OkHttp client
         val client = OkHttpClient()
