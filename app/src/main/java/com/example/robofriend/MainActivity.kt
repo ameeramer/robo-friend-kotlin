@@ -619,6 +619,7 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
                             if (line.startsWith(prefix)) {
                                 val linewithoutprefix = line.removePrefix(prefix)
                                 if (linewithoutprefix == "[DONE]") {
+                                    openaiService?.addAssistanceResponse(responseBuilder.toString())
                                     uploadConversationHistory()
                                     lastAIResponseText.value = responseBuilder.toString()
                                     lastChunk.value = true
