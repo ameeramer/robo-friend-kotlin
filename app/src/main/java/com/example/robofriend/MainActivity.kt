@@ -343,13 +343,12 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
                 .toString() else message.subSequence(11, message.lastIndex + 1).toString()
         }
 
-        Card(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(50))
                 .padding(vertical = 4.dp, horizontal = 8.dp)
                 .copyToClipboardOnClick(subMessage), // Apply the custom modifier here
-            //contentAlignment = if (isUserMessage) Alignment.CenterEnd else Alignment.CenterStart
+            contentAlignment = if (isUserMessage) Alignment.CenterEnd else Alignment.CenterStart
         ) {
             Text(
                 text = subMessage,
