@@ -45,7 +45,7 @@ class OpenAIApiService(private var modelId: String, systemMessage: String) {
         context: Context, bucketName: String, aws3service: AwsS3Service?
     ): CompletableFuture<URL>? {
         return aws3service?.uploadConversationHistory(
-            context, bucketName, "context.json", "context.json", messagesAsStrings
+            context, bucketName, "context_lillian2.json", "context_lillian2.json", messagesAsStrings
         )
     }
 
