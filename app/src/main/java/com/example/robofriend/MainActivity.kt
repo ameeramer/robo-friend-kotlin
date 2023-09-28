@@ -148,14 +148,14 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
         )
 
         awsS3Service?.downloadConversationHistory(
-            this, BuildConfig.AWS_BUCKET_NAME, "conversation_history.json"
+            this, BuildConfig.AWS_BUCKET_NAME, "conversation_history_lillian2.json"
         )?.thenAccept { history ->
             allConversationHistory.clear()
             allConversationHistory.addAll(history)
         }?.exceptionally { null }
             ?.handle { _, t -> Log.e("AWSS3", "error downloading conversation history: $t") }
 
-        awsS3Service?.downloadConversationHistory(this, BuildConfig.AWS_BUCKET_NAME, "context.json")
+        awsS3Service?.downloadConversationHistory(this, BuildConfig.AWS_BUCKET_NAME, "context_lillian2.json")
             ?.thenAccept { history ->
                 val systemMessage = history[0].substring(8)
                 openaiService = OpenAIApiService("gpt-4", systemMessage)
@@ -431,8 +431,8 @@ class MainActivity : ComponentActivity(), CoroutineScope by MainScope() {
         val futureAWS = awsS3Service?.uploadConversationHistory(
             this,
             BuildConfig.AWS_BUCKET_NAME,
-            "conversation_history.json",
-            "conversation_history.json",
+            "conversation_history_lillian2.json",
+            "conversation_history_lillian2.json",
             allConversationHistory.plus(conversationHistory)
         )
         futureAWS?.thenAccept { url ->
